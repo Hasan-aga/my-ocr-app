@@ -1,6 +1,6 @@
 # My OCR App
 
-Self-hosted OCR API for note images. It uses FastAPI and PaddleOCR PP-OCRv6 on CPU, runs behind Caddy, and returns recognized lines with confidence scores.
+Self-hosted OCR API for note images. It uses FastAPI and PaddleOCR 3.7 with PP-OCRv6 on CPU, runs behind Caddy, and returns recognized lines with confidence scores.
 
 ## Features
 
@@ -12,6 +12,22 @@ Self-hosted OCR API for note images. It uses FastAPI and PaddleOCR PP-OCRv6 on C
 - Single OCR worker with a bounded concurrency queue
 - No OCR text logging and no external OCR service
 - Non-root container with a read-only filesystem
+
+## Models
+
+The runtime uses PaddleOCR 3.7.0 and PaddlePaddle 3.2.2 on CPU.
+
+| Role | Default model |
+| --- | --- |
+| Text detection | `PP-OCRv6_medium_det` |
+| Text recognition | `PP-OCRv6_medium_rec` |
+| Textline orientation | `PP-LCNet_x1_0_textline_ori`, only when `OCR_USE_TEXTLINE_ORIENTATION=true` |
+
+`OCR_MODEL_TIER` selects `tiny`, `small`, or `medium`, which maps to `PP-OCRv6_<tier>_det` and `PP-OCRv6_<tier>_rec`. You can override the two models independently with `OCR_DET_MODEL_NAME` and `OCR_REC_MODEL_NAME`.
+
+Models are downloaded on first use from HuggingFace (`PaddlePaddle/<model-name>`) by PaddleX into `/models/paddlex/official_models`, inside the `ocr-models` volume. The image sets the model source to HuggingFace and disables the source connectivity check, so model resolution does not depend on a startup network probe. Model weights are not baked into the image; for offline deployment, populate the volume in advance.
+
+Every OCR response reports the detection and recognition models actually used in the `model` field.
 
 ## Requirements
 
@@ -143,6 +159,8 @@ Copy `.env.example` to `.env` and adjust as needed:
 | --- | --- | --- |
 | `OCR_API_KEY` | required | Bearer token, at least 16 characters |
 | `OCR_MODEL_TIER` | `medium` | `tiny`, `small`, or `medium` |
+| `OCR_DET_MODEL_NAME` | derived | Override the detection model name |
+| `OCR_REC_MODEL_NAME` | derived | Override the recognition model name |
 | `OCR_PREPROCESS` | `none` | `none` or `contrast` |
 | `OCR_MAX_SIDE` | `2000` | Resize longest image side |
 | `OCR_DET_LIMIT_SIDE_LEN` | `960` | Detection input limit |
@@ -157,8 +175,6 @@ Copy `.env.example` to `.env` and adjust as needed:
 | `OCR_DOCS_ENABLED` | `false` | Expose `/docs` and OpenAPI |
 
 The complete list is in `.env.example`.
-
-Model weights are downloaded on first start into the `ocr-models` volume. To use a container without internet access, populate that volume with the required PaddleOCR models first.
 
 ## Development
 
