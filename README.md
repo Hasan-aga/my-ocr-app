@@ -210,6 +210,22 @@ uv run python -m scripts.evaluate \
   --runs 3
 ```
 
+### TrOCR comparison
+
+`scripts/evaluate_trocr.py` compares the single-line `microsoft/trocr-small-handwritten` recognizer with the current PaddleOCR pipeline. PaddleOCR detects text lines, then TrOCR recognizes each crop. The optional group is not installed in the runtime image.
+
+```bash
+uv sync --group trocr
+uv run --group trocr python -m scripts.evaluate_trocr \
+  --image example-note-sm.jpg \
+  --truth text.txt \
+  --device auto \
+  --runs 3 \
+  --save-crops /tmp/trocr-crops
+```
+
+Use `--device cpu` to compare with Apple Silicon MPS, `--preprocess contrast` to test the contrast preprocessing, and `--merge-gap-ratio 0` to disable grouping of same-line detection fragments. The model and tokenizer are downloaded from HuggingFace on first use.
+
 Evaluation images and transcriptions are intentionally ignored by git and excluded from the Docker image.
 
 ## Privacy and Security
