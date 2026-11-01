@@ -1,4 +1,4 @@
-from app.ocr import parse_result
+from app.engines.paddle import parse_result
 
 
 def test_parse_result_with_boxes() -> None:

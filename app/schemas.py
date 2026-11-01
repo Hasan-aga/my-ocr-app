@@ -17,9 +17,35 @@ class ImageInfo(BaseModel):
 
 
 class ModelInfo(BaseModel):
-    detection: str
-    recognition: str
-    tier: str
+    provider: str
+    id: str
+    label: str | None = None
+    tier: str | None = None
+    detection: str | None = None
+    recognition: str | None = None
+
+
+class Pricing(BaseModel):
+    input_usd_per_1m: float | None = Field(default=None, ge=0)
+    output_usd_per_1m: float | None = Field(default=None, ge=0)
+
+
+class CatalogModel(BaseModel):
+    id: str
+    provider: str
+    label: str | None = None
+    note: str | None = None
+    pricing: Pricing | None = None
+
+
+class ModelsResponse(BaseModel):
+    models: list[CatalogModel]
+
+
+class UsageInfo(BaseModel):
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    estimated_cost_usd: float | None = Field(default=None, ge=0)
 
 
 class OcrResponse(BaseModel):
@@ -28,6 +54,7 @@ class OcrResponse(BaseModel):
     line_count: int
     image: ImageInfo
     model: ModelInfo
+    usage: UsageInfo | None = None
     processing_time_ms: float
 
 

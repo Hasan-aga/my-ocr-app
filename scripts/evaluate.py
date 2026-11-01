@@ -8,8 +8,8 @@ import unicodedata
 from pathlib import Path
 
 from app.config import Settings
+from app.engines.paddle import PaddleEngine
 from app.images import prepare_image
-from app.ocr import OcrEngine
 
 
 def normalize_text(text: str) -> str:
@@ -85,7 +85,7 @@ def main() -> None:
     )
 
     load_started = time.perf_counter()
-    engine = OcrEngine(settings)
+    engine = PaddleEngine(settings)
     load_seconds = time.perf_counter() - load_started
 
     image_bytes = args.image.read_bytes()
@@ -103,7 +103,7 @@ def main() -> None:
         started = time.perf_counter()
         prepared = prepare_image(image_bytes, settings)
         try:
-            lines = engine.recognize(prepared.path)
+            lines = engine.recognize(prepared.path).lines
         finally:
             prepared.path.unlink(missing_ok=True)
         timings.append((time.perf_counter() - started) * 1000)

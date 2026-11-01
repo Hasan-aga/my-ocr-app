@@ -1,21 +1,26 @@
 # My OCR App
 
-Self-hosted OCR API for note images. It uses FastAPI and PaddleOCR 3.7 with PP-OCRv6 on CPU, runs behind Caddy, and returns recognized lines with confidence scores.
+Self-hosted OCR API for note images. It runs a local PaddleOCR 3.7 engine with PP-OCRv6 on CPU and can also call Alibaba Cloud Model Studio (DashScope) Qwen vision models in the cloud. You pick the model per request, and the API reports per-line text, bounding boxes, and (for cloud models) token usage and estimated cost.
 
 ## Features
 
 - Bearer-token authentication
+- Multiple OCR engines: local PaddleOCR and Qwen vision models on Alibaba Cloud
+- Per-request model selection with `?model=<id>` and a server-side default
+- `GET /models` lists available engines with USD pricing
 - JPEG, PNG, WebP, HEIC/HEIF, and TIFF input
 - EXIF orientation handling and automatic transparency flattening
 - Configurable image resizing and detection limits for stable CPU memory use
-- Per-line confidence scores and bounding boxes
-- Single OCR worker with a bounded concurrency queue
-- No OCR text logging and no external OCR service
+- Per-line confidence scores and bounding boxes; token usage and estimated cost for cloud models
+- Single local OCR worker with a bounded concurrency queue (cloud models run concurrently)
+- No OCR text logging
 - Non-root container with a read-only filesystem
 
 ## Models
 
-The runtime uses PaddleOCR 3.7.0 and PaddlePaddle 3.2.2 on CPU.
+### Local PaddleOCR (default)
+
+The runtime ships with PaddleOCR 3.7.0 and PaddlePaddle 3.2.2 on CPU.
 
 | Role | Default model |
 | --- | --- |
@@ -23,16 +28,29 @@ The runtime uses PaddleOCR 3.7.0 and PaddlePaddle 3.2.2 on CPU.
 | Text recognition | `PP-OCRv6_medium_rec` |
 | Textline orientation | `PP-LCNet_x1_0_textline_ori`, only when `OCR_USE_TEXTLINE_ORIENTATION=true` |
 
-`OCR_MODEL_TIER` selects `tiny`, `small`, or `medium`, which maps to `PP-OCRv6_<tier>_det` and `PP-OCRv6_<tier>_rec`. You can override the two models independently with `OCR_DET_MODEL_NAME` and `OCR_REC_MODEL_NAME`.
+`OCR_MODEL_TIER` selects `tiny`, `small`, or `medium`, which maps to `PP-OCRv6_<tier>_det` and `PP-OCRv6_<tier>_rec`. You can override the two models independently with `OCR_DET_MODEL_NAME` and `OCR_REC_MODEL_NAME`. Disable the local engine with `OCR_ENABLE_PADDLE=false`.
 
 Models are downloaded on first use from HuggingFace (`PaddlePaddle/<model-name>`) by PaddleX into `/models/paddlex/official_models`, inside the `ocr-models` volume. The image sets the model source to HuggingFace and disables the source connectivity check, so model resolution does not depend on a startup network probe. Model weights are not baked into the image; for offline deployment, populate the volume in advance.
 
-Every OCR response reports the detection and recognition models actually used in the `model` field.
+### Qwen vision models on Alibaba Cloud (optional)
+
+Set `OCR_QWEN_API_KEY` to your Model Studio API key (Singapore region by default) to enable cloud models. Each model on `OCR_QWEN_MODELS` is registered under its model ID, e.g. `qwen3.5-ocr`, `qwen3.8-flash`, `qwen3.7-plus`, `qwen3.8-max`, `qwen3-vl-plus`. Any model ID your account can access is accepted, including custom ones not in the built-in catalog. Set `OCR_QWEN_BASE_URL` to change region/endpoint.
+
+Images are base64-encoded into the request. The model is prompted to return a strict JSON array of lines with bounding boxes; responses are parsed tolerantly and fall back to plain text if the model does not return JSON.
+
+Each Qwen request costs money. Cloud responses include `input_tokens`, `output_tokens`, and an `estimated_cost_usd` computed from the price catalog in `app/engines/qwen_catalog.py`. Prices change frequently — enter current USD prices per 1M tokens from the Model Studio console; unentered prices are reported as `null` and excluded from the cost estimate.
+
+### Model selection
+
+`OCR_DEFAULT_MODEL` sets the default engine used when `?model=` is omitted. When unset and PaddleOCR is enabled, the default is `paddle`. Otherwise the first enabled Qwen model is used. Every OCR response reports the engine actually used in the `model` field.
+
+- Run against the local Paddle engine: `?model=paddle` (or omit `model`).
+- Run against a cloud model: `?model=qwen3.5-ocr`.
 
 ## Requirements
 
 - Docker with Docker Compose
-- About 2.3 GB of available memory for the container
+- About 2.3 GB of available memory for the container, required only when the local PaddleOCR engine is enabled (`OCR_ENABLE_PADDLE=true`)
 - A reverse proxy network named `caddy` if using the included Compose file
 - `uv` and Python 3.12 only for development and tests
 
@@ -95,6 +113,27 @@ curl -H "Authorization: Bearer $TOKEN" \
   https://ocr.example.com/ocr
 ```
 
+Pick a specific engine (e.g. a Qwen model, or force the local Paddle engine):
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  -F "file=@note.jpg" \
+  "https://ocr.example.com/ocr?model=qwen3.5-ocr"
+
+curl -H "Authorization: Bearer $TOKEN" \
+  -F "file=@note.jpg" \
+  "https://ocr.example.com/ocr?model=paddle"
+```
+
+List the enabled engines and their USD pricing:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  https://ocr.example.com/models
+```
+
+Unknown model IDs return `400` with the list of available engines.
+
 Filter low-confidence lines:
 
 ```bash
@@ -130,26 +169,71 @@ Example response:
     "content_type": "image/jpeg"
   },
   "model": {
+    "provider": "paddle",
+    "id": "paddle",
+    "label": "PaddleOCR (local)",
     "detection": "PP-OCRv6_medium_det",
     "recognition": "PP-OCRv6_medium_rec",
     "tier": "medium"
   },
+  "usage": null,
   "processing_time_ms": 7240.56
 }
 ```
 
-Coordinates are in pixels of the processed image shown in `image.width` and `image.height`.
+Coordinates are in pixels of the processed image shown in `image.width` and `image.height`. For Qwen cloud models, `model` uses `provider: "qwen"`, `model.id` is the model ID, and `usage` reports `input_tokens`, `output_tokens`, and `estimated_cost_usd`. Cloud line `confidence` is `1.0` and not meaningful, so `min_confidence` filtering is effectively a no-op for cloud output.
+
+Example response from a Qwen cloud model:
+
+```json
+{
+  "text": "First line\nSecond line",
+  "lines": [
+    {
+      "text": "First line",
+      "confidence": 1.0,
+      "box": [10.0, 10.0, 400.0, 60.0]
+    },
+    {
+      "text": "Second line",
+      "confidence": 1.0,
+      "box": [10.0, 70.0, 420.0, 120.0]
+    }
+  ],
+  "line_count": 2,
+  "image": {
+    "width": 2000,
+    "height": 1500,
+    "original_width": 4032,
+    "original_height": 3024,
+    "format": "JPEG",
+    "content_type": "image/jpeg"
+  },
+  "model": {
+    "provider": "qwen",
+    "id": "qwen3.5-ocr",
+    "label": "Qwen3.5 OCR"
+  },
+  "usage": {
+    "input_tokens": 1892,
+    "output_tokens": 41,
+    "estimated_cost_usd": null
+  },
+  "processing_time_ms": 4120.33
+}
+```
 
 ### Errors
 
 | Status | Meaning |
 | --- | --- |
-| 400 | Empty or invalid image |
+| 400 | Empty or invalid image, or unknown `model` |
 | 401 | Missing or invalid bearer token |
 | 413 | Upload or decoded image too large |
 | 415 | Unsupported content type or image format |
-| 429 | OCR worker is busy beyond the configured timeout |
+| 429 | Local OCR worker is busy beyond the configured timeout |
 | 500 | OCR processing failed |
+| 502 | OCR engine error (e.g. Qwen API rejected the request after retries) |
 
 ## Configuration
 
@@ -158,6 +242,13 @@ Copy `.env.example` to `.env` and adjust as needed:
 | Variable | Default | Description |
 | --- | --- | --- |
 | `OCR_API_KEY` | required | Bearer token, at least 16 characters |
+| `OCR_ENABLE_PADDLE` | `true` | Enable the local PaddleOCR engine |
+| `OCR_DEFAULT_MODEL` | derived | Engine used when `?model=` is omitted (`paddle` or a Qwen model ID) |
+| `OCR_QWEN_API_KEY` | unset | Alibaba Cloud Model Studio API key; enables Qwen cloud models |
+| `OCR_QWEN_BASE_URL` | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | Model Studio OpenAI-compatible endpoint |
+| `OCR_QWEN_MODELS` | common Qwen models | Comma-separated allowlist of Qwen model IDs |
+| `OCR_QWEN_TIMEOUT_SECONDS` | `60` | Per-request timeout to the provider |
+| `OCR_QWEN_MAX_RETRIES` | `3` | Retries on 429/5xx with backoff |
 | `OCR_MODEL_TIER` | `medium` | `tiny`, `small`, or `medium` |
 | `OCR_DET_MODEL_NAME` | derived | Override the detection model name |
 | `OCR_REC_MODEL_NAME` | derived | Override the recognition model name |
@@ -233,5 +324,6 @@ Evaluation images and transcriptions are intentionally ignored by git and exclud
 - Every OCR request requires a bearer token.
 - Recognized text is not written to application logs.
 - Images are processed in temporary files and removed after each request.
+- Using a Qwen cloud model sends the (possibly resized) image to Alibaba Cloud Model Studio; the Qwen API key is only used to contact that provider.
 - The container runs as a non-root user with dropped capabilities, a read-only root filesystem, and no host ports.
 - Keep `.env` out of version control and readable only by its owner.

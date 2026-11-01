@@ -3,6 +3,8 @@ from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+DEFAULT_QWEN_MODELS = "qwen3.5-ocr,qwen3.8-flash,qwen3.7-plus,qwen3.8-max,qwen3-vl-plus"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -13,6 +15,8 @@ class Settings(BaseSettings):
     )
 
     api_key: str = Field(min_length=16)
+    default_model: str | None = None
+    enable_paddle: bool = True
     model_tier: Literal["tiny", "small", "medium"] = "medium"
     det_model_name: str | None = None
     rec_model_name: str | None = None
@@ -33,6 +37,12 @@ class Settings(BaseSettings):
     busy_timeout_seconds: float = Field(default=1.0, gt=0)
     docs_enabled: bool = False
 
+    qwen_api_key: str | None = None
+    qwen_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    qwen_models: str = DEFAULT_QWEN_MODELS
+    qwen_timeout_seconds: float = Field(default=60.0, gt=0)
+    qwen_max_retries: int = Field(default=3, ge=0, le=10)
+
     @property
     def max_upload_bytes(self) -> int:
         return self.max_upload_mb * 1024 * 1024
@@ -44,3 +54,7 @@ class Settings(BaseSettings):
     @property
     def resolved_rec_model(self) -> str:
         return self.rec_model_name or f"PP-OCRv6_{self.model_tier}_rec"
+
+    @property
+    def qwen_model_ids(self) -> list[str]:
+        return [model.strip() for model in self.qwen_models.split(",") if model.strip()]

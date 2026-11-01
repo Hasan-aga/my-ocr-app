@@ -8,6 +8,8 @@ from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 
 from app.auth import verify_bearer
 from app.config import Settings
+from app.engines.base import EngineError, EngineUsage, OcrEngine, ParsedLine
+from app.engines.registry import EngineRegistry, EngineRegistryError, create_registry
 from app.images import (
     ALLOWED_CONTENT_TYPES,
     ImageTooLargeError,
@@ -16,8 +18,13 @@ from app.images import (
     UnsupportedImageTypeError,
     prepare_image,
 )
-from app.ocr import OcrEngine, OcrEngineProtocol, ParsedLine
-from app.schemas import HealthResponse, ImageInfo, OcrLine, OcrResponse
+from app.schemas import (
+    HealthResponse,
+    ImageInfo,
+    ModelsResponse,
+    OcrLine,
+    OcrResponse,
+)
 
 logger = logging.getLogger("my_ocr_app")
 
@@ -42,37 +49,45 @@ async def read_upload(file: UploadFile, max_bytes: int) -> bytes:
 def _run_pipeline(
     data: bytes,
     settings: Settings,
-    engine: OcrEngineProtocol,
-) -> tuple[list[ParsedLine], PreparedImage, float]:
+    engine: OcrEngine,
+) -> tuple[list[ParsedLine], PreparedImage, float, EngineUsage | None]:
     started = time.perf_counter()
     prepared = prepare_image(data, settings)
     try:
-        lines = engine.recognize(prepared.path)
+        result = engine.recognize(prepared.path)
     finally:
         prepared.path.unlink(missing_ok=True)
     elapsed_ms = (time.perf_counter() - started) * 1000
-    return lines, prepared, elapsed_ms
+    return result.lines, prepared, elapsed_ms, result.usage
 
 
 def create_app(
     settings: Settings | None = None,
-    engine: OcrEngineProtocol | None = None,
+    registry: EngineRegistry | None = None,
 ) -> FastAPI:
     resolved_settings = settings or Settings()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        active_registry = registry or await asyncio.to_thread(create_registry, resolved_settings)
         app.state.settings = resolved_settings
-        app.state.engine = engine or await asyncio.to_thread(OcrEngine, resolved_settings)
+        app.state.registry = active_registry
         app.state.semaphore = asyncio.Semaphore(1)
-        if resolved_settings.warmup and engine is None:
-            await asyncio.to_thread(app.state.engine.warmup)
-        logger.info(
-            "OCR ready with %s / %s",
-            app.state.engine.det_model,
-            app.state.engine.rec_model,
-        )
-        yield
+        try:
+            if resolved_settings.warmup and registry is None:
+                for engine in active_registry.ids():
+                    selected = active_registry.get(engine)
+                    if selected.is_local:
+                        await asyncio.to_thread(selected.warmup)
+                        break
+            logger.info(
+                "OCR ready; default model=%s (%s)",
+                active_registry.default_id,
+                active_registry.default().provider,
+            )
+            yield
+        finally:
+            active_registry.close()
 
     fastapi_kwargs = {
         "title": "My OCR App",
@@ -93,16 +108,23 @@ def create_app(
         return HealthResponse(
             status="ok",
             ready=True,
-            model=request.app.state.engine.model_info(),
+            model=request.app.state.registry.default_model_info(),
         )
+
+    @app.get("/models", response_model=ModelsResponse)
+    async def models(request: Request) -> ModelsResponse:
+        verify_bearer(request, request.app.state.settings.api_key)
+        return ModelsResponse(models=request.app.state.registry.catalog())
 
     @app.post("/ocr", response_model=OcrResponse)
     async def ocr(
         request: Request,
         file: Annotated[UploadFile, File()],
+        model: Annotated[str | None, Query()] = None,
         min_confidence: Annotated[float, Query(ge=0, le=1)] = 0.0,
     ) -> OcrResponse:
         active_settings: Settings = request.app.state.settings
+        registry: EngineRegistry = request.app.state.registry
         verify_bearer(request, active_settings.api_key)
 
         content_type = (file.content_type or "").lower()
@@ -116,24 +138,30 @@ def create_app(
         except ImageValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+        try:
+            active_engine = registry.get(model) if model else registry.default()
+        except EngineRegistryError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
         semaphore: asyncio.Semaphore = request.app.state.semaphore
         acquired = False
         try:
-            try:
-                await asyncio.wait_for(
-                    semaphore.acquire(),
-                    timeout=active_settings.busy_timeout_seconds,
-                )
-                acquired = True
-            except TimeoutError as exc:
-                raise HTTPException(status_code=429, detail="OCR engine is busy") from exc
+            if active_engine.is_local:
+                try:
+                    await asyncio.wait_for(
+                        semaphore.acquire(),
+                        timeout=active_settings.busy_timeout_seconds,
+                    )
+                    acquired = True
+                except TimeoutError as exc:
+                    raise HTTPException(status_code=429, detail="OCR engine is busy") from exc
 
             try:
-                lines, prepared, elapsed_ms = await asyncio.to_thread(
+                lines, prepared, elapsed_ms, usage = await asyncio.to_thread(
                     _run_pipeline,
                     data,
                     active_settings,
-                    request.app.state.engine,
+                    active_engine,
                 )
             except UnsupportedImageTypeError as exc:
                 raise HTTPException(status_code=415, detail=str(exc)) from exc
@@ -141,6 +169,9 @@ def create_app(
                 raise HTTPException(status_code=413, detail=str(exc)) from exc
             except ImageValidationError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except EngineError as exc:
+                logger.exception("OCR engine failed")
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
             except Exception as exc:
                 logger.exception("OCR pipeline failed")
                 raise HTTPException(status_code=500, detail="OCR processing failed") from exc
@@ -161,7 +192,8 @@ def create_app(
                     format=prepared.format,
                     content_type=content_type,
                 ),
-                model=request.app.state.engine.model_info(),
+                model=active_engine.model_info(),
+                usage=usage.as_schema() if usage is not None else None,
                 processing_time_ms=round(elapsed_ms, 2),
             )
         finally:

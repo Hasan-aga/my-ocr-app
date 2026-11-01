@@ -5,6 +5,7 @@ description = "Self-hosted OCR API for handwritten note images"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.115,<1",
+    "httpx>=0.28,<1",
     "paddleocr==3.7.0",
     "paddlepaddle==3.2.2",
     "pillow>=11,<12",
@@ -16,7 +17,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28,<1",
     "pytest>=8.3,<9",
     "ruff>=0.9,<1",
 ]
