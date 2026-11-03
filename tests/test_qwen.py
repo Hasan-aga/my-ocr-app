@@ -196,3 +196,86 @@ def test_create_registry_fails_without_engines() -> None:
     )
     with pytest.raises(EngineError):
         create_registry(settings)
+
+
+def test_create_registry_discovers_models_from_provider() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/compatible-mode/v1/models"
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "qwen3.7-plus"},
+                    {"id": "gpt-noise"},
+                    {"id": "qwen-vl-ocr-2025-11-20"},
+                    {"id": "qwen3-vl-plus"},
+                ]
+            },
+        )
+
+    settings = Settings(
+        api_key="test-key-1234567890",
+        warmup=False,
+        enable_paddle=False,
+        qwen_api_key="sk-1234567890abcdef",
+        qwen_models="",
+    )
+    registry = create_registry(settings, qwen_transport=httpx.MockTransport(handler))
+    try:
+        assert registry.default_id == "qwen-vl-ocr-2025-11-20"
+        assert registry.ids() == [
+            "qwen-vl-ocr-2025-11-20",
+            "qwen3-vl-plus",
+            "qwen3.7-plus",
+            "gpt-noise",
+        ]
+        catalog = {entry.id: entry for entry in registry.catalog()}
+        assert catalog["qwen-vl-ocr-2025-11-20"].provider == "qwen"
+        assert catalog["qwen-vl-ocr-2025-11-20"].label == "Qwen-VL OCR"
+        assert catalog["gpt-noise"].provider == "qwen"
+        assert catalog["gpt-noise"].label is None
+        engine = registry.get("qwen-vl-ocr-2025-11-20")
+        assert engine.provider == "qwen"
+    finally:
+        registry.close()
+
+
+def test_create_registry_builds_unlisted_models_lazily() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"id": "qwen3.7-plus"}]})
+
+    discovered = {
+        "api_key": "sk-1234567890abcdef",
+    }
+    settings = Settings(
+        api_key="test-key-1234567890",
+        warmup=False,
+        enable_paddle=False,
+        qwen_api_key=discovered["api_key"],
+        qwen_models="",
+    )
+    registry = create_registry(settings, qwen_transport=httpx.MockTransport(handler))
+    try:
+        assert registry.ids() == ["qwen3.7-plus"]
+        assert registry.get("brand-new-model-id").id == "brand-new-model-id"
+    finally:
+        registry.close()
+
+
+def test_create_registry_tolerates_discovery_failure() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "boom"})
+
+    settings = Settings(
+        api_key="test-key-1234567890",
+        warmup=False,
+        enable_paddle=True,
+        qwen_api_key="sk-1234567890abcdef",
+        qwen_models="",
+    )
+    registry = create_registry(settings, qwen_transport=httpx.MockTransport(handler))
+    try:
+        assert registry.ids() == ["paddle"]
+        assert registry.default_id == "paddle"
+    finally:
+        registry.close()

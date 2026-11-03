@@ -150,6 +150,85 @@ def _parse_retry_after(value: str | None) -> float | None:
         return None
 
 
+def _model_sort_key(model_id: str) -> tuple[int, str]:
+    lowered = model_id.lower()
+    if lowered.startswith("qwen-vl-ocr"):
+        return (0, lowered)
+    if "vl" in lowered or "omni" in lowered:
+        return (1, lowered)
+    if lowered.startswith("qwen"):
+        return (2, lowered)
+    return (3, lowered)
+
+
+def list_provider_models(
+    *,
+    api_key: str,
+    base_url: str,
+    timeout_seconds: float,
+    transport: httpx.BaseTransport | None = None,
+) -> list[str]:
+    """List every model the API key can access, using the provider's /models endpoint."""
+    with httpx.Client(
+        base_url=base_url,
+        timeout=httpx.Timeout(timeout_seconds),
+        transport=transport,
+        headers={"Authorization": f"Bearer {api_key}"},
+    ) as client:
+        try:
+            response = client.get("/models")
+        except httpx.HTTPError as exc:
+            raise EngineError(f"Qwen model discovery failed: {exc}") from exc
+        if response.status_code != 200:
+            raise EngineError(
+                f"Qwen model discovery returned HTTP {response.status_code}: {response.text[:300]}"
+            )
+        data = response.json()
+    ids: list[str] = [
+        str(item.get("id"))
+        for item in data.get("data", [])
+        if isinstance(item, dict) and item.get("id")
+    ]
+    return sorted(set(ids), key=_model_sort_key)
+
+
+class QwenProvider:
+    """Builds Qwen engines on demand and discovers the available model list."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str,
+        timeout_seconds: float = 60.0,
+        max_retries: int = 3,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        self._api_key = api_key
+        self._base_url = base_url
+        self._timeout_seconds = timeout_seconds
+        self._max_retries = max_retries
+        self._transport = transport
+
+    def discover(self) -> list[str]:
+        return list_provider_models(
+            api_key=self._api_key,
+            base_url=self._base_url,
+            timeout_seconds=self._timeout_seconds,
+            transport=self._transport,
+        )
+
+    def build(self, model_id: str) -> QwenEngine:
+        return QwenEngine(
+            model_id,
+            api_key=self._api_key,
+            base_url=self._base_url,
+            timeout_seconds=self._timeout_seconds,
+            max_retries=self._max_retries,
+            transport=self._transport,
+        )
+
+
 def _content_to_text(content: Any) -> str:
     if isinstance(content, str):
         return content

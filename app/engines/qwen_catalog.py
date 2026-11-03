@@ -20,11 +20,11 @@ class QwenCatalogEntry:
 
 
 QWEN_CATALOG: dict[str, QwenCatalogEntry] = {
-    "qwen3.5-ocr": QwenCatalogEntry(
-        label="Qwen3.5 OCR",
+    "qwen-vl-ocr-2025-11-20": QwenCatalogEntry(
+        label="Qwen-VL OCR",
         input_usd_per_1m=None,
         output_usd_per_1m=None,
-        note="Optimized for text, tables, and handwriting extraction",
+        note="Dedicated OCR model for documents, tables, and handwriting",
     ),
     "qwen3.8-max": QwenCatalogEntry(
         label="Qwen3.8 Max",
@@ -37,6 +37,12 @@ QWEN_CATALOG: dict[str, QwenCatalogEntry] = {
         input_usd_per_1m=None,
         output_usd_per_1m=None,
         note="Fast and cost-effective",
+    ),
+    "qwen3.7-max": QwenCatalogEntry(
+        label="Qwen3.7 Max",
+        input_usd_per_1m=None,
+        output_usd_per_1m=None,
+        note="Flagship vision model",
     ),
     "qwen3.7-plus": QwenCatalogEntry(
         label="Qwen3.7 Plus",

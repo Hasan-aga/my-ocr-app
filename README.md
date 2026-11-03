@@ -34,7 +34,7 @@ Models are downloaded on first use from HuggingFace (`PaddlePaddle/<model-name>`
 
 ### Qwen vision models on Alibaba Cloud (optional)
 
-Set `OCR_QWEN_API_KEY` to your Model Studio API key (Singapore region by default) to enable cloud models. Each model on `OCR_QWEN_MODELS` is registered under its model ID, e.g. `qwen3.5-ocr`, `qwen3.8-flash`, `qwen3.7-plus`, `qwen3.8-max`, `qwen3-vl-plus`. Any model ID your account can access is accepted, including custom ones not in the built-in catalog. Set `OCR_QWEN_BASE_URL` to change region/endpoint.
+Set `OCR_QWEN_API_KEY` to your Model Studio API key (Singapore region by default) to enable cloud models. At startup the app calls the provider's `/models` API and registers every model your key can access, so `/models` reflects exactly what your account offers (e.g. `qwen-vl-ocr-2025-11-20`, `qwen3.7-plus`, `qwen3.8-flash`, `qwen3-vl-plus`). To restrict the list (for example to a few you actually want to compare), set `OCR_QWEN_MODELS` to a comma-separated subset. Set `OCR_QWEN_BASE_URL` to change region/endpoint.
 
 Images are base64-encoded into the request. The model is prompted to return a strict JSON array of lines with bounding boxes; responses are parsed tolerantly and fall back to plain text if the model does not return JSON.
 
@@ -45,7 +45,7 @@ Each Qwen request costs money. Cloud responses include `input_tokens`, `output_t
 `OCR_DEFAULT_MODEL` sets the default engine used when `?model=` is omitted. When unset and PaddleOCR is enabled, the default is `paddle`. Otherwise the first enabled Qwen model is used. Every OCR response reports the engine actually used in the `model` field.
 
 - Run against the local Paddle engine: `?model=paddle` (or omit `model`).
-- Run against a cloud model: `?model=qwen3.5-ocr`.
+- Run against a cloud model: `?model=qwen-vl-ocr-2025-11-20`.
 
 ## Requirements
 
@@ -118,7 +118,7 @@ Pick a specific engine (e.g. a Qwen model, or force the local Paddle engine):
 ```bash
 curl -H "Authorization: Bearer $TOKEN" \
   -F "file=@note.jpg" \
-  "https://ocr.example.com/ocr?model=qwen3.5-ocr"
+  "https://ocr.example.com/ocr?model=qwen-vl-ocr-2025-11-20"
 
 curl -H "Authorization: Bearer $TOKEN" \
   -F "file=@note.jpg" \
@@ -211,8 +211,8 @@ Example response from a Qwen cloud model:
   },
   "model": {
     "provider": "qwen",
-    "id": "qwen3.5-ocr",
-    "label": "Qwen3.5 OCR"
+    "id": "qwen-vl-ocr-2025-11-20",
+    "label": "Qwen-VL OCR"
   },
   "usage": {
     "input_tokens": 1892,
@@ -246,7 +246,7 @@ Copy `.env.example` to `.env` and adjust as needed:
 | `OCR_DEFAULT_MODEL` | derived | Engine used when `?model=` is omitted (`paddle` or a Qwen model ID) |
 | `OCR_QWEN_API_KEY` | unset | Alibaba Cloud Model Studio API key; enables Qwen cloud models |
 | `OCR_QWEN_BASE_URL` | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | Model Studio OpenAI-compatible endpoint |
-| `OCR_QWEN_MODELS` | common Qwen models | Comma-separated allowlist of Qwen model IDs |
+| `OCR_QWEN_MODELS` | empty | Optional comma-separated allowlist of Qwen model IDs; empty = auto-discover all models the key can access |
 | `OCR_QWEN_TIMEOUT_SECONDS` | `60` | Per-request timeout to the provider |
 | `OCR_QWEN_MAX_RETRIES` | `3` | Retries on 429/5xx with backoff |
 | `OCR_MODEL_TIER` | `medium` | `tiny`, `small`, or `medium` |

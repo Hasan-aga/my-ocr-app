@@ -3,8 +3,6 @@ from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-DEFAULT_QWEN_MODELS = "qwen3.5-ocr,qwen3.8-flash,qwen3.7-plus,qwen3.8-max,qwen3-vl-plus"
-
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -39,7 +37,7 @@ class Settings(BaseSettings):
 
     qwen_api_key: str | None = None
     qwen_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-    qwen_models: str = DEFAULT_QWEN_MODELS
+    qwen_models: str = ""
     qwen_timeout_seconds: float = Field(default=60.0, gt=0)
     qwen_max_retries: int = Field(default=3, ge=0, le=10)
 
