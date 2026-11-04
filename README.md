@@ -242,6 +242,8 @@ Copy `.env.example` to `.env` and adjust as needed:
 | Variable | Default | Description |
 | --- | --- | --- |
 | `OCR_API_KEY` | required | Bearer token, at least 16 characters |
+| `LOG_LEVEL` | `INFO` | Root log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `LOG_FORMAT` | `text` | `text` (human-readable) or `json` (structured, one JSON object per line) |
 | `OCR_ENABLE_PADDLE` | `true` | Enable the local PaddleOCR engine |
 | `OCR_DEFAULT_MODEL` | derived | Engine used when `?model=` is omitted (`paddle` or a Qwen model ID) |
 | `OCR_QWEN_API_KEY` | unset | Alibaba Cloud Model Studio API key; enables Qwen cloud models |

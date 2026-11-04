@@ -1,10 +1,12 @@
 import asyncio
 import logging
 import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.auth import verify_bearer
 from app.config import Settings
@@ -18,6 +20,7 @@ from app.images import (
     UnsupportedImageTypeError,
     prepare_image,
 )
+from app.logging_config import configure_logging, request_id_var
 from app.schemas import (
     HealthResponse,
     ImageInfo,
@@ -26,6 +29,7 @@ from app.schemas import (
     OcrResponse,
 )
 
+configure_logging()
 logger = logging.getLogger("my_ocr_app")
 
 
@@ -59,6 +63,39 @@ def _run_pipeline(
         prepared.path.unlink(missing_ok=True)
     elapsed_ms = (time.perf_counter() - started) * 1000
     return result.lines, prepared, elapsed_ms, result.usage
+
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    """Assigns a request id, logs every request with status and duration."""
+
+    async def dispatch(self, request: Request, call_next):
+        request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
+        token = request_id_var.set(request_id)
+        started = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception:
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            logger.exception(
+                "request failed method=%s path=%s duration_ms=%.1f",
+                request.method,
+                request.url.path,
+                elapsed_ms,
+            )
+            request_id_var.reset(token)
+            raise
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        response.headers["X-Request-ID"] = request_id
+        logger.info(
+            "request method=%s path=%s status=%d duration_ms=%.1f client=%s",
+            request.method,
+            request.url.path,
+            response.status_code,
+            elapsed_ms,
+            request.client.host if request.client else "unknown",
+        )
+        request_id_var.reset(token)
+        return response
 
 
 def create_app(
@@ -98,6 +135,7 @@ def create_app(
         fastapi_kwargs.update({"docs_url": None, "redoc_url": None, "openapi_url": None})
 
     app = FastAPI(**fastapi_kwargs)
+    app.add_middleware(RequestLoggingMiddleware)
 
     @app.get("/")
     async def root() -> dict[str, str]:
@@ -114,7 +152,13 @@ def create_app(
     @app.get("/models", response_model=ModelsResponse)
     async def models(request: Request) -> ModelsResponse:
         verify_bearer(request, request.app.state.settings.api_key)
-        return ModelsResponse(models=request.app.state.registry.catalog())
+        catalog = request.app.state.registry.catalog()
+        logger.info(
+            "model catalog served count=%d providers=%s",
+            len(catalog),
+            ",".join(sorted({m.provider for m in catalog})) or "none",
+        )
+        return ModelsResponse(models=catalog)
 
     @app.post("/ocr", response_model=OcrResponse)
     async def ocr(
@@ -141,6 +185,11 @@ def create_app(
         try:
             active_engine = registry.get(model) if model else registry.default()
         except EngineRegistryError as exc:
+            logger.info(
+                "model selection failed requested=%r available=%s",
+                model,
+                ",".join(registry.ids()),
+            )
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         semaphore: asyncio.Semaphore = request.app.state.semaphore
@@ -156,6 +205,13 @@ def create_app(
                 except TimeoutError as exc:
                     raise HTTPException(status_code=429, detail="OCR engine is busy") from exc
 
+            logger.info(
+                "ocr started engine=%s provider=%s content_type=%s bytes=%d",
+                active_engine.id,
+                active_engine.provider,
+                content_type,
+                len(data),
+            )
             try:
                 lines, prepared, elapsed_ms, usage = await asyncio.to_thread(
                     _run_pipeline,

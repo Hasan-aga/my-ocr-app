@@ -7,6 +7,7 @@ from app.engines.base import EngineError, OcrEngine
 from app.engines.paddle import PADDLE_ID, PaddleEngine
 from app.engines.qwen import QwenEngine, QwenProvider
 from app.engines.qwen_catalog import catalog_entry
+from app.logging_config import redact_secret
 from app.schemas import CatalogModel, ModelInfo, Pricing
 
 logger = logging.getLogger("my_ocr_app")
@@ -106,6 +107,12 @@ def create_registry(
     qwen: QwenProvider | None = None
     qwen_ids: list[str] = []
     if settings.qwen_api_key:
+        logger.info(
+            "qwen configured base_url=%s api_key=%s strict_models=%s",
+            settings.qwen_base_url,
+            redact_secret(settings.qwen_api_key),
+            bool(settings.qwen_model_ids),
+        )
         qwen = QwenProvider(
             api_key=settings.qwen_api_key,
             base_url=settings.qwen_base_url,
@@ -120,13 +127,20 @@ def create_registry(
             try:
                 qwen_ids = qwen.discover()
             except EngineError as exc:
-                logger.warning("Qwen model discovery failed (continuing with PaddleOCR): %s", exc)
+                logger.warning(
+                    "Qwen model discovery failed (continuing with PaddleOCR): %s. "
+                    "Check that OCR_QWEN_API_KEY is valid for OCR_QWEN_BASE_URL "
+                    "(Singapore/international keys need dashscope-intl.aliyuncs.com)",
+                    exc,
+                )
                 qwen_ids = []
             logger.info("Qwen provider ready with %d model(s)", len(qwen_ids))
     elif not settings.enable_paddle and settings.qwen_models:
         logger.warning(
             "Qwen cloud models configured but OCR_QWEN_API_KEY is not set; cloud engines disabled"
         )
+    else:
+        logger.info("qwen not configured (OCR_QWEN_API_KEY unset); using local engines only")
 
     known_ids = list(engines) + list(qwen_ids)
     if not known_ids:
@@ -153,4 +167,10 @@ def create_registry(
     providers.update({ident: "qwen" for ident in qwen_ids})
     for ident in registry.ids():
         logger.info("  - %s (%s)", ident, providers[ident])
+    if qwen is not None and not qwen_ids:
+        logger.warning(
+            "no Qwen models registered: cloud discovery or OCR_QWEN_MODELS produced an empty list; "
+            "only %s will be served",
+            ", ".join(known_ids) or "none",
+        )
     return registry
