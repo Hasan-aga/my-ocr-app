@@ -4,6 +4,7 @@
 const apiKeyInput = document.getElementById('api-key');
 const saveKeyBtn = document.getElementById('save-key');
 const authStatus = document.getElementById('auth-status');
+const cameraStatus = document.getElementById('camera-status');
 const cameraBtn = document.getElementById('camera-btn');
 const fileInput = document.getElementById('file-input');
 const previewImg = document.getElementById('preview-img');
@@ -24,7 +25,7 @@ const processingDetails = document.getElementById('processing-details');
 // State
 let mediaStream = null;
 let currentImage = null;
-let apiKey = localStorage.getItem('ocr-api-key') || '';
+let apiKey = sessionStorage.getItem('ocr-api-key') || '';
 
 // Initialize
 function init() {
@@ -47,33 +48,40 @@ function init() {
     updateConfidenceValue();
 }
 
-// Save API key to localStorage
+// Save API key for the current browser session only
 function saveApiKey() {
     const key = apiKeyInput.value.trim();
     if (!key) {
         updateAuthStatus('API key cannot be empty', 'error');
         return;
     }
-    
+
     apiKey = key;
-    localStorage.setItem('ocr-api-key', key);
-    updateAuthStatus('API key saved successfully', 'success');
+    sessionStorage.setItem('ocr-api-key', key);
+    updateAuthStatus('API key saved for this session', 'success');
 }
 
-// Update authentication status display
-function updateAuthStatus(message, type) {
-    authStatus.textContent = message;
-    authStatus.className = `status ${type}`;
-    
-    // Auto-hide success messages after 3 seconds
+// Update a status element with optional auto-hide for success messages
+function updateStatus(element, message, type) {
+    element.textContent = message;
+    element.className = `status ${type}`;
+
     if (type === 'success') {
         setTimeout(() => {
-            if (authStatus.textContent === message) {
-                authStatus.textContent = '';
-                authStatus.className = 'status';
+            if (element.textContent === message) {
+                element.textContent = '';
+                element.className = 'status';
             }
         }, 3000);
     }
+}
+
+function updateAuthStatus(message, type) {
+    updateStatus(authStatus, message, type);
+}
+
+function updateCameraStatus(message, type) {
+    updateStatus(cameraStatus, message, type);
 }
 
 // Start camera
@@ -88,10 +96,10 @@ async function startCamera() {
         // Hide other preview elements
         previewContainer.style.height = '300px';
         
-        updateAuthStatus('Camera started', 'success');
+        updateCameraStatus('Camera started', 'success');
     } catch (err) {
         console.error('Error accessing camera:', err);
-        updateAuthStatus(`Camera error: ${err.message}`, 'error');
+        updateCameraStatus(`Camera error: ${err.message}`, 'error');
     }
 }
 
@@ -106,7 +114,7 @@ function stopCamera() {
         
         // Show placeholder
         previewContainer.style.height = 'auto';
-        updateAuthStatus('Camera stopped', 'success');
+        updateCameraStatus('Camera stopped', 'success');
     }
 }
 
@@ -132,7 +140,7 @@ function captureFromCamera() {
         previewImg.classList.add('show');
         cameraVideo.classList.remove('show');
         
-        updateAuthStatus('Image captured from camera', 'success');
+        updateCameraStatus('Image captured from camera', 'success');
     }, 'image/jpeg', 0.9);
 }
 
@@ -143,7 +151,7 @@ function handleFileUpload(event) {
     
     // Check if it's an image
     if (!file.type.match('image.*')) {
-        updateAuthStatus('Please select an image file', 'error');
+        updateCameraStatus('Please select an image file', 'error');
         return;
     }
     
@@ -157,7 +165,7 @@ function handleFileUpload(event) {
         cameraVideo.classList.remove('show');
         cameraControls.style.display = 'none';
         
-        updateAuthStatus(`File loaded: ${file.name}`, 'success');
+        updateCameraStatus(`File loaded: ${file.name}`, 'success');
     };
     reader.readAsDataURL(file);
 }
@@ -248,31 +256,34 @@ function updateProcessStatus(message, type) {
 
 // Display OCR results
 function displayResults(result) {
-    // Clear previous results
-    extractedText.textContent = '';
-    processingDetails.innerHTML = '';
-    
-    // Show extracted text
     extractedText.textContent = result.text || 'No text found';
-    
-    // Show processing details
-    const detailsHTML = `
-        <p><strong>Model:</strong> ${result.model?.label || result.model?.id || 'Unknown'}</p>
-        <p><strong>Lines:</strong> ${result.line_count || 0}</p>
-        <p><strong>Processing Time:</strong> ${result.processing_time_ms || 0} ms</p>
-        <p><strong>Image Size:</strong> ${result.image?.width || 0} × ${result.image?.height || 0} pixels</p>
-    `;
-    
+    processingDetails.textContent = '';
+
+    const rows = [
+        ['Model', result.model?.label || result.model?.id || 'Unknown'],
+        ['Lines', String(result.line_count || 0)],
+        ['Processing Time', `${result.processing_time_ms || 0} ms`],
+        ['Image Size', `${result.image?.width || 0} × ${result.image?.height || 0} pixels`],
+    ];
+
     if (result.usage) {
-        detailsHTML += `
-            <p><strong>Token Usage:</strong> ${result.usage.input_tokens || 0} input, ${result.usage.output_tokens || 0} output</p>
-            <p><strong>Estimated Cost:</strong> $${(result.usage.estimated_cost_usd || 0).toFixed(6)}</p>
-        `;
+        rows.push([
+            'Token Usage',
+            `${result.usage.input_tokens || 0} input, ${result.usage.output_tokens || 0} output`,
+        ]);
+        const cost = result.usage.estimated_cost_usd;
+        rows.push(['Estimated Cost', cost === null ? 'unavailable' : `$${cost.toFixed(6)}`]);
     }
-    
-    processingDetails.innerHTML = detailsHTML;
-    
-    // Show results container
+
+    for (const [label, value] of rows) {
+        const p = document.createElement('p');
+        const strong = document.createElement('strong');
+        strong.textContent = `${label}: `;
+        p.appendChild(strong);
+        p.appendChild(document.createTextNode(value));
+        processingDetails.appendChild(p);
+    }
+
     resultsContainer.style.display = 'block';
 }
 

@@ -2,11 +2,12 @@ import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
-from typing import Annotated, Union
+from pathlib import Path
+from typing import Annotated
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
 
 from app.auth import verify_bearer
 from app.config import Settings
@@ -20,33 +21,6 @@ from app.images import (
     UnsupportedImageTypeError,
     prepare_image,
 )
-
-# Security imports - try/except for optional dependencies
-try:
-    from slowapi import Limiter
-    from slowapi.util import get_remote_address
-    from fastapi_csrf_protect import CsrfProtect
-    from pydantic import BaseModel
-    
-    class CsrfSettings(BaseModel):
-        secret_key: str = "my-secret-key-change-in-production"
-    
-    # Initialize rate limiter
-    limiter = Limiter(
-        key_func=get_remote_address,
-        default_limits=["100/day;50/hour;10/minute"],
-    )
-    
-    # Initialize CSRF protection
-    @CsrfProtect.load_config
-    def get_csrf_config():
-        return CsrfSettings()
-    
-except ImportError:
-    # Security packages not available
-    limiter = None
-    CsrfProtect = None
-    get_remote_address = None
 from app.schemas import (
     HealthResponse,
     ImageInfo,
@@ -54,8 +28,15 @@ from app.schemas import (
     OcrLine,
     OcrResponse,
 )
+from app.security import (
+    SlidingWindowLimiter,
+    client_key,
+    rate_limited_response,
+)
 
 logger = logging.getLogger("my_ocr_app")
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 async def read_upload(file: UploadFile, max_bytes: int) -> bytes:
@@ -90,14 +71,9 @@ def _run_pipeline(
     return result.lines, prepared, elapsed_ms, result.usage
 
 
-from typing import Union
-
-from typing import Union
-
-
 def create_app(
-    settings: Union[Settings, None] = None,
-    registry: Union[EngineRegistry, None] = None,
+    settings: Settings | None = None,
+    registry: EngineRegistry | None = None,
 ) -> FastAPI:
     resolved_settings = settings or Settings()
 
@@ -107,6 +83,10 @@ def create_app(
         app.state.settings = resolved_settings
         app.state.registry = active_registry
         app.state.semaphore = asyncio.Semaphore(1)
+        app.state.ocr_limiter = SlidingWindowLimiter(resolved_settings.rate_limit_ocr_per_minute)
+        app.state.models_limiter = SlidingWindowLimiter(
+            resolved_settings.rate_limit_models_per_minute
+        )
         try:
             if resolved_settings.warmup and registry is None:
                 for engine in active_registry.ids():
@@ -133,28 +113,25 @@ def create_app(
 
     app = FastAPI(**fastapi_kwargs)
 
-    # Add rate limiting middleware if available
-    if limiter is not None and get_remote_address is not None:
-        app.state.limiter = limiter
-        app.add_middleware(
-            limiter.middleware,
-            key_func=get_remote_address,
-        )
-
-    # Add CSRF protection if available
-    if CsrfProtect is not None:
-        @app.middleware("http")
-        async def csrf_middleware(request: Request, call_next):
-            if request.method in ["POST", "PUT", "DELETE"]:
-                # Skip CSRF for API endpoints that use Bearer auth
-                auth_header = request.headers.get("authorization", "")
-                if auth_header.startswith("Bearer "):
-                    return await call_next(request)
-            return await call_next(request)
+    @app.middleware("http")
+    async def rate_limit_middleware(request: Request, call_next):
+        limiter = None
+        if request.url.path == "/ocr":
+            limiter = request.app.state.ocr_limiter
+        elif request.url.path == "/models":
+            limiter = request.app.state.models_limiter
+        if limiter is not None:
+            retry_after = limiter.retry_after(client_key(request))
+            if retry_after:
+                return rate_limited_response(retry_after)
+        return await call_next(request)
 
     @app.get("/")
-    async def root() -> dict[str, str]:
-        return {"name": "my-ocr-app", "status": "ok"}
+    async def frontend() -> Response:
+        return Response(
+            content=(STATIC_DIR / "index.html").read_text(encoding="utf-8"),
+            media_type="text/html",
+        )
 
     @app.get("/healthz", response_model=HealthResponse)
     async def healthz(request: Request) -> HealthResponse:
@@ -173,7 +150,7 @@ def create_app(
     async def ocr(
         request: Request,
         file: Annotated[UploadFile, File()],
-        model: Annotated[Union[str, None], Query()] = None,
+        model: Annotated[str | None, Query()] = None,
         min_confidence: Annotated[float, Query(ge=0, le=1)] = 0.0,
     ) -> OcrResponse:
         active_settings: Settings = request.app.state.settings
@@ -253,19 +230,6 @@ def create_app(
             if acquired:
                 semaphore.release()
 
-    # Serve static files for frontend
-    try:
-        from fastapi.staticfiles import StaticFiles
-        from fastapi.responses import Response
-        app.mount("/static", StaticFiles(directory="app/static"), name="static")
-        
-        # Serve frontend HTML
-        @app.get("/")
-        async def frontend():
-            with open("app/static/index.html") as f:
-                return Response(content=f.read(), media_type="text/html")
-    except ImportError:
-        # Static files not available
-        pass
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     return app

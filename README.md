@@ -96,6 +96,14 @@ ocr.example.com {
 }
 ```
 
+## Web UI
+
+Open the service root (for example `https://ocr.hasanaga.org/`) to use the browser interface. It supports taking a photo with the device camera or uploading an image, choosing a model, and viewing the recognized text. The API key from `.env` must be entered in the page; it is kept in session storage only and sent as a Bearer token on each request.
+
+Browser camera access requires HTTPS.
+
+To prevent abuse, `/ocr` and `/models` are rate limited per client IP (10 and 30 requests per minute by default). Exceeding the limit returns `429` with a `Retry-After` header. Configure with `OCR_RATE_LIMIT_OCR_PER_MINUTE` and `OCR_RATE_LIMIT_MODELS_PER_MINUTE`.
+
 ## How to Use
 
 The health endpoint is public:
@@ -264,6 +272,8 @@ Copy `.env.example` to `.env` and adjust as needed:
 | `OCR_WARMUP` | `true` | Run a warmup inference at startup |
 | `OCR_BUSY_TIMEOUT_SECONDS` | `1.0` | Queue wait before returning 429 |
 | `OCR_DOCS_ENABLED` | `false` | Expose `/docs` and OpenAPI |
+| `OCR_RATE_LIMIT_OCR_PER_MINUTE` | `10` | Per-IP request limit for `/ocr` |
+| `OCR_RATE_LIMIT_MODELS_PER_MINUTE` | `30` | Per-IP request limit for `/models` |
 
 The complete list is in `.env.example`.
 

@@ -11,10 +11,18 @@ from tests.conftest import FakeEngine
 AUTH = {"Authorization": "Bearer test-key-1234567890"}
 
 
-def test_root(client: TestClient) -> None:
+def test_root_serves_frontend(client: TestClient) -> None:
     response = client.get("/")
     assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+    assert response.headers["content-type"].startswith("text/html")
+    assert "My OCR App" in response.text
+    assert 'id="file-input"' in response.text
+
+
+def test_static_assets(client: TestClient) -> None:
+    for path in ("/static/css/style.css", "/static/js/main.js"):
+        response = client.get(path)
+        assert response.status_code == 200
 
 
 def test_health(client: TestClient) -> None:
@@ -143,6 +151,44 @@ def test_ocr_rejects_oversized_upload(fake_registry, image_bytes: bytes) -> None
             headers=AUTH,
         )
     assert response.status_code == 413
+
+
+def test_ocr_rate_limit(fake_registry, image_bytes: bytes) -> None:
+    settings = Settings(
+        api_key="test-key-1234567890",
+        warmup=False,
+        rate_limit_ocr_per_minute=1,
+    )
+    app = create_app(settings=settings, registry=fake_registry)
+    with TestClient(app) as client:
+        assert (
+            client.post(
+                "/ocr",
+                files={"file": ("note.png", image_bytes, "image/png")},
+                headers=AUTH,
+            ).status_code
+            == 200
+        )
+        limited = client.post(
+            "/ocr",
+            files={"file": ("note.png", image_bytes, "image/png")},
+            headers=AUTH,
+        )
+        assert limited.status_code == 429
+        assert int(limited.headers["retry-after"]) > 0
+        assert client.get("/healthz").status_code == 200
+
+
+def test_models_rate_limit(fake_registry) -> None:
+    settings = Settings(
+        api_key="test-key-1234567890",
+        warmup=False,
+        rate_limit_models_per_minute=1,
+    )
+    app = create_app(settings=settings, registry=fake_registry)
+    with TestClient(app) as client:
+        assert client.get("/models", headers=AUTH).status_code == 200
+        assert client.get("/models", headers=AUTH).status_code == 429
 
 
 def test_image_within_resize_limit(client: TestClient) -> None:

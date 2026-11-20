@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     use_textline_orientation: bool = False
     busy_timeout_seconds: float = Field(default=1.0, gt=0)
     docs_enabled: bool = False
+    rate_limit_ocr_per_minute: int = Field(default=10, gt=0)
+    rate_limit_models_per_minute: int = Field(default=30, gt=0)
 
     qwen_api_key: str | None = None
     qwen_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
