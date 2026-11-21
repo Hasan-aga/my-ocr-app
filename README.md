@@ -4,7 +4,9 @@ Self-hosted OCR API for note images. It runs a local PaddleOCR 3.7 engine with P
 
 ## Features
 
-- Bearer-token authentication
+- Rate limiting on `/ocr`, `/models`, `/auth/login`, and `/auth/register`
+- User accounts with admin approval: new registrations stay pending until approved
+- Bearer API key for programmatic (curl/script) access
 - Multiple OCR engines: local PaddleOCR and Qwen vision models on Alibaba Cloud
 - Per-request model selection with `?model=<id>` and a server-side default
 - `GET /models` lists available engines with USD pricing
@@ -98,11 +100,20 @@ ocr.example.com {
 
 ## Web UI
 
-Open the service root (for example `https://ocr.hasanaga.org/`) to use the browser interface. It supports taking a photo with the device camera or uploading an image, choosing a model, and viewing the recognized text. The API key from `.env` must be entered in the page; it is kept in session storage only and sent as a Bearer token on each request.
+Open the service root (for example `https://ocr.hasanaga.org/`) to use the browser interface: sign in or register, take a photo with the device camera or upload an image, choose a model, and view the recognized text. The UI is a React SPA built with Vite and bundled into the image at `app/static`.
 
-Browser camera access requires HTTPS.
+### Accounts and admin approval
 
-To prevent abuse, `/ocr` and `/models` are rate limited per client IP (10 and 30 requests per minute by default). Exceeding the limit returns `429` with a `Retry-After` header. Configure with `OCR_RATE_LIMIT_OCR_PER_MINUTE` and `OCR_RATE_LIMIT_MODELS_PER_MINUTE`.
+- Set `OCR_ADMIN_USERNAME` and `OCR_ADMIN_PASSWORD` in `.env` to seed your admin account. If neither is set, the **first account registered becomes the admin**.
+- Anyone can register from the UI, but the account stays **pending** and cannot sign in until an administrator approves it.
+- Admins manage users at `/admin`: approve pending accounts, disable, re-enable, or delete users. There is at least one admin; the last admin cannot be disabled or deleted, and nobody can modify their own account from the admin screen.
+- Passwords are hashed with Argon2id; sessions are short-lived JWTs signed with a secret stored in the data directory (or `OCR_JWT_SECRET`). A disabled or deleted user's session stops working immediately.
+
+For scripts, the `OCR_API_KEY` bearer token from `.env` keeps working against `/ocr` and `/models` and can also be used for `/auth/me`.
+
+Camera capture uses the standard `<input type="file" accept="image/*" capture="environment">` pattern: on a phone, **Take photo** opens the device camera to snap a picture and **Choose from library** opens the photo gallery (or the desktop file picker). No permissions prompt or HTTPS requirement — the browser's native capture UI handles everything.
+
+To prevent abuse, `/ocr`, `/models`, `/auth/login`, and `/auth/register` are rate limited per client IP (10, 30, 10, and 5 requests per minute by default). Exceeding the limit returns `429` with a `Retry-After` header. Configure with `OCR_RATE_LIMIT_*_PER_MINUTE`.
 
 ## How to Use
 
@@ -249,7 +260,12 @@ Copy `.env.example` to `.env` and adjust as needed:
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `OCR_API_KEY` | required | Bearer token, at least 16 characters |
+| `OCR_API_KEY` | required | Bearer token for programmatic access, at least 16 characters |
+| `OCR_ADMIN_USERNAME` | unset | Seed an approved admin account; set together with `OCR_ADMIN_PASSWORD` |
+| `OCR_ADMIN_PASSWORD` | unset | Password for the seeded admin account, at least 10 characters |
+| `OCR_DATA_DIR` | `data` (host) / `/data` (Docker) | Directory for the user database and session secret |
+| `OCR_JWT_SECRET` | unset | Explicit session signing secret; otherwise generated in `OCR_DATA_DIR` |
+| `OCR_JWT_EXPIRE_HOURS` | `168` | Session lifetime in hours (max 720) |
 | `OCR_ENABLE_PADDLE` | `true` | Enable the local PaddleOCR engine |
 | `OCR_DEFAULT_MODEL` | derived | Engine used when `?model=` is omitted (`paddle` or a Qwen model ID) |
 | `OCR_QWEN_API_KEY` | unset | Alibaba Cloud Model Studio API key; enables Qwen cloud models |
@@ -274,6 +290,8 @@ Copy `.env.example` to `.env` and adjust as needed:
 | `OCR_DOCS_ENABLED` | `false` | Expose `/docs` and OpenAPI |
 | `OCR_RATE_LIMIT_OCR_PER_MINUTE` | `10` | Per-IP request limit for `/ocr` |
 | `OCR_RATE_LIMIT_MODELS_PER_MINUTE` | `30` | Per-IP request limit for `/models` |
+| `OCR_RATE_LIMIT_LOGIN_PER_MINUTE` | `10` | Per-IP request limit for `/auth/login` |
+| `OCR_RATE_LIMIT_REGISTER_PER_MINUTE` | `5` | Per-IP request limit for `/auth/register` |
 
 The complete list is in `.env.example`.
 
@@ -285,6 +303,15 @@ Install dependencies and run checks:
 uv sync
 uv run ruff check .
 uv run pytest
+```
+
+Frontend (React SPA in `frontend/`, requires Node 20+):
+
+```bash
+cd frontend
+npm install
+npm run dev    # dev server on :5173, proxies the API to :8000
+npm run build  # outputs frontend/dist, served by the API when present
 ```
 
 Run the integration test against a real model:
@@ -331,7 +358,8 @@ Evaluation images and transcriptions are intentionally ignored by git and exclud
 
 ## Privacy and Security
 
-- Every OCR request requires a bearer token.
+- User passwords are stored as Argon2id hashes in an SQLite database; sessions are signed JWTs. New accounts require admin approval.
+- The static API key still authorizes programmatic requests and is never displayed in the UI.
 - Recognized text is not written to application logs.
 - Images are processed in temporary files and removed after each request.
 - Using a Qwen cloud model sends the (possibly resized) image to Alibaba Cloud Model Studio; the Qwen API key is only used to contact that provider.

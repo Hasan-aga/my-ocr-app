@@ -8,5 +8,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 models/
+data/
+frontend/node_modules/
+frontend/dist/
 example-note-sm.jpg
 text.txt

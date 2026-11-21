@@ -1,3 +1,13 @@
+FROM node:22-alpine AS web
+
+WORKDIR /web
+
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+COPY frontend/ ./
+RUN npm run build
+
 FROM python:3.12-slim-bookworm AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -26,6 +36,9 @@ COPY app ./app
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
+# Bundle the built SPA at app/static; the API serves it from there.
+COPY --from=web /web/dist ./app/static
+
 FROM base AS test
 
 COPY tests ./tests
@@ -39,12 +52,13 @@ FROM base AS runtime
 ENV HOME=/models \
     PADDLE_PDX_CACHE_HOME=/models/paddlex \
     PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
-    PADDLE_PDX_MODEL_SOURCE=huggingface
+    PADDLE_PDX_MODEL_SOURCE=huggingface \
+    OCR_DATA_DIR=/data
 
 RUN groupadd --gid 10001 ocr \
     && useradd --uid 10001 --gid ocr --create-home --shell /usr/sbin/nologin ocr \
-    && mkdir -p /models/paddlex \
-    && chown -R ocr:ocr /models
+    && mkdir -p /models/paddlex /data \
+    && chown -R ocr:ocr /models /data
 
 USER ocr
 
