@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
@@ -43,9 +44,21 @@ class Settings(BaseSettings):
     qwen_timeout_seconds: float = Field(default=60.0, gt=0)
     qwen_max_retries: int = Field(default=3, ge=0, le=10)
 
+    data_dir: str = "data"
+    admin_username: str | None = None
+    admin_password: str | None = Field(default=None, min_length=10)
+    jwt_secret: str | None = None
+    jwt_expire_hours: int = Field(default=168, gt=0, le=24 * 30)
+    rate_limit_login_per_minute: int = Field(default=10, gt=0)
+    rate_limit_register_per_minute: int = Field(default=5, gt=0)
+
     @property
     def max_upload_bytes(self) -> int:
         return self.max_upload_mb * 1024 * 1024
+
+    @property
+    def data_path(self) -> Path:
+        return Path(self.data_dir)
 
     @property
     def resolved_det_model(self) -> str:

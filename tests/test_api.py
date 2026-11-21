@@ -1,4 +1,5 @@
 from io import BytesIO
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -11,18 +12,50 @@ from tests.conftest import FakeEngine
 AUTH = {"Authorization": "Bearer test-key-1234567890"}
 
 
-def test_root_serves_frontend(client: TestClient) -> None:
+def test_root_serves_frontend(client: TestClient, built_static: Path) -> None:
     response = client.get("/")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert "My OCR App" in response.text
-    assert 'id="file-input"' in response.text
+    assert 'id="root"' in response.text
 
 
-def test_static_assets(client: TestClient) -> None:
-    for path in ("/static/css/style.css", "/static/js/main.js"):
-        response = client.get(path)
-        assert response.status_code == 200
+def test_root_without_build_returns_hint(client: TestClient, tmp_path: Path) -> None:
+    missing = tmp_path / "nope"
+    # Point both candidate locations at a directory with no index.html.
+    app = create_app(
+        settings=Settings(
+            api_key="test-key-1234567890",
+            warmup=False,
+            data_dir=str(tmp_path / "d"),
+            admin_username=None,
+            admin_password=None,
+        ),
+        registry=EngineRegistry({"fake": FakeEngine()}, default_id="fake"),
+    )
+    import app.main as main_module
+
+    original = (main_module.STATIC_DIR, main_module.FRONTEND_DIST)
+    main_module.STATIC_DIR, main_module.FRONTEND_DIST = missing, missing / "dist"
+    try:
+        with TestClient(app) as test_client:
+            response = test_client.get("/")
+    finally:
+        main_module.STATIC_DIR, main_module.FRONTEND_DIST = original
+    assert response.status_code == 503
+    assert "npm run build" in response.json()["detail"]
+
+
+def test_static_assets_and_spa_fallback(client: TestClient, built_static: Path) -> None:
+    response = client.get("/assets/index-abc123.js")
+    assert response.status_code == 200
+    assert "console.log" in response.text
+    # Unknown non-API path serves the app shell for client-side routing.
+    response = client.get("/some/spa/route")
+    assert response.status_code == 200
+    assert 'id="root"' in response.text
+    # Unknown API path returns 404 instead of the shell.
+    assert client.get("/ocr/nonexistent").status_code == 404
 
 
 def test_health(client: TestClient) -> None:

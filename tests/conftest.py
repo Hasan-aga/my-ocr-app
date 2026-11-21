@@ -1,5 +1,6 @@
 from collections.abc import Iterator
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -48,8 +49,14 @@ class FakeEngine:
 
 
 @pytest.fixture
-def settings() -> Settings:
-    return Settings(api_key="test-key-1234567890", warmup=False)
+def settings(tmp_path) -> Settings:
+    return Settings(
+        api_key="test-key-1234567890",
+        warmup=False,
+        data_dir=str(tmp_path / "data"),
+        admin_username=None,
+        admin_password=None,
+    )
 
 
 @pytest.fixture
@@ -63,11 +70,33 @@ def fake_registry(fake_engine: FakeEngine) -> EngineRegistry:
 
 
 @pytest.fixture
-def client(fake_registry: EngineRegistry) -> Iterator[TestClient]:
-    settings = Settings(api_key="test-key-1234567890", warmup=False)
+def client(fake_registry: EngineRegistry, tmp_path) -> Iterator[TestClient]:
+    settings = Settings(
+        api_key="test-key-1234567890",
+        warmup=False,
+        data_dir=str(tmp_path / "data"),
+        admin_username=None,
+        admin_password=None,
+    )
     app = create_app(settings=settings, registry=fake_registry)
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def built_static(tmp_path, monkeypatch) -> Path:
+    """Simulate a built SPA bundle where app/static would live in the image."""
+    static_dir = tmp_path / "built-static"
+    (static_dir / "assets").mkdir(parents=True)
+    (static_dir / "index.html").write_text(
+        '<!doctype html><html><head><title>My OCR App</title></head>'
+        '<body><div id="root"></div>'
+        '<script type="module" src="/assets/index-abc123.js"></script></body></html>',
+        encoding="utf-8",
+    )
+    (static_dir / "assets" / "index-abc123.js").write_text("console.log('app');", encoding="utf-8")
+    monkeypatch.setattr("app.main.STATIC_DIR", static_dir)
+    return static_dir
 
 
 @pytest.fixture

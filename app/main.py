@@ -5,11 +5,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import Response
-from fastapi.staticfiles import StaticFiles
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response
 
-from app.auth import verify_bearer
+from app.auth import Principal
 from app.config import Settings
 from app.engines.base import EngineError, EngineUsage, OcrEngine, ParsedLine
 from app.engines.registry import EngineRegistry, EngineRegistryError, create_registry
@@ -21,6 +20,7 @@ from app.images import (
     UnsupportedImageTypeError,
     prepare_image,
 )
+from app.routes_auth import create_accounts_router, get_principal
 from app.schemas import (
     HealthResponse,
     ImageInfo,
@@ -33,10 +33,25 @@ from app.security import (
     client_key,
     rate_limited_response,
 )
+from app.tokens import TokenManager
+from app.user_store import UserStore
 
 logger = logging.getLogger("my_ocr_app")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+# Top-level path segments owned by the API; everything else falls through to
+# the single-page application.
+API_SEGMENTS = {"ocr", "models", "auth", "admin", "healthz", "docs", "redoc", "openapi.json"}
+
+
+def resolve_static_dir() -> Path | None:
+    """Prefer a built SPA; Docker images ship it at app/static."""
+    for candidate in (STATIC_DIR, FRONTEND_DIST):
+        if (candidate / "index.html").is_file():
+            return candidate
+    return None
 
 
 async def read_upload(file: UploadFile, max_bytes: int) -> bytes:
@@ -87,6 +102,36 @@ def create_app(
         app.state.models_limiter = SlidingWindowLimiter(
             resolved_settings.rate_limit_models_per_minute
         )
+        app.state.login_limiter = SlidingWindowLimiter(
+            resolved_settings.rate_limit_login_per_minute
+        )
+        app.state.register_limiter = SlidingWindowLimiter(
+            resolved_settings.rate_limit_register_per_minute
+        )
+
+        user_store = UserStore(resolved_settings.data_path / "users.db")
+        username = resolved_settings.admin_username
+        password = resolved_settings.admin_password
+        if (username is None) != (password is None):
+            raise RuntimeError(
+                "OCR_ADMIN_USERNAME and OCR_ADMIN_PASSWORD must be set together"
+            )
+        if username and password:
+            created = user_store.ensure_admin(username, password)
+            if created is not None:
+                logger.info("Seeded administrator account %r", username)
+        app.state.user_store = user_store
+        app.state.tokens = TokenManager(
+            secret=resolved_settings.jwt_secret,
+            data_dir=resolved_settings.data_path,
+            expire_hours=resolved_settings.jwt_expire_hours,
+        )
+        if not user_store.has_admin():
+            logger.warning(
+                "No administrator exists yet: the first account registered via "
+                "/auth/register will become the admin"
+            )
+
         try:
             if resolved_settings.warmup and registry is None:
                 for engine in active_registry.ids():
@@ -115,23 +160,23 @@ def create_app(
 
     @app.middleware("http")
     async def rate_limit_middleware(request: Request, call_next):
+        path = request.url.path
         limiter = None
-        if request.url.path == "/ocr":
+        if path == "/ocr":
             limiter = request.app.state.ocr_limiter
-        elif request.url.path == "/models":
+        elif path == "/models":
             limiter = request.app.state.models_limiter
+        elif path == "/auth/login" and request.method == "POST":
+            limiter = request.app.state.login_limiter
+        elif path == "/auth/register" and request.method == "POST":
+            limiter = request.app.state.register_limiter
         if limiter is not None:
             retry_after = limiter.retry_after(client_key(request))
             if retry_after:
                 return rate_limited_response(retry_after)
         return await call_next(request)
 
-    @app.get("/")
-    async def frontend() -> Response:
-        return Response(
-            content=(STATIC_DIR / "index.html").read_text(encoding="utf-8"),
-            media_type="text/html",
-        )
+    app.include_router(create_accounts_router())
 
     @app.get("/healthz", response_model=HealthResponse)
     async def healthz(request: Request) -> HealthResponse:
@@ -142,20 +187,22 @@ def create_app(
         )
 
     @app.get("/models", response_model=ModelsResponse)
-    async def models(request: Request) -> ModelsResponse:
-        verify_bearer(request, request.app.state.settings.api_key)
+    async def models(
+        request: Request,
+        principal: Annotated[Principal, Depends(get_principal)],
+    ) -> ModelsResponse:
         return ModelsResponse(models=request.app.state.registry.catalog())
 
     @app.post("/ocr", response_model=OcrResponse)
     async def ocr(
         request: Request,
         file: Annotated[UploadFile, File()],
+        principal: Annotated[Principal, Depends(get_principal)],
         model: Annotated[str | None, Query()] = None,
         min_confidence: Annotated[float, Query(ge=0, le=1)] = 0.0,
     ) -> OcrResponse:
         active_settings: Settings = request.app.state.settings
         registry: EngineRegistry = request.app.state.registry
-        verify_bearer(request, active_settings.api_key)
 
         content_type = (file.content_type or "").lower()
         if content_type not in ALLOWED_CONTENT_TYPES:
@@ -230,6 +277,43 @@ def create_app(
             if acquired:
                 semaphore.release()
 
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    _mount_frontend(app)
 
     return app
+
+
+def _mount_frontend(app: FastAPI) -> None:
+    """Serve the built SPA. Resolution is lazy so dev builds are picked up."""
+
+    def _file_or_none(static_dir: Path, rel: str) -> FileResponse | None:
+        candidate = (static_dir / rel).resolve()
+        if candidate.is_file() and static_dir.resolve() in candidate.parents:
+            return FileResponse(candidate)
+        return None
+
+    @app.get("/")
+    async def spa_root() -> Response:
+        static_dir = resolve_static_dir()
+        if static_dir is None:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": "Web UI is not built. Run 'npm install && npm run build' "
+                    "in frontend/ or use the Docker image which bundles the UI."
+                },
+            )
+        return FileResponse(static_dir / "index.html", media_type="text/html")
+
+    @app.get("/{full_path:path}")
+    async def spa(full_path: str) -> Response:
+        static_dir = resolve_static_dir()
+        if static_dir is None:
+            raise HTTPException(status_code=404, detail="Not found")
+        top = full_path.split("/", 1)[0]
+        if top in API_SEGMENTS:
+            raise HTTPException(status_code=404, detail="Not found")
+        served = _file_or_none(static_dir, full_path)
+        if served is not None:
+            return served
+        # Client-side route: serve the app shell.
+        return FileResponse(static_dir / "index.html", media_type="text/html")
